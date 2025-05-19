@@ -14,3 +14,6 @@ __pycache__/
 # OS-specific files
 .DS_Store
 Thumbs.db
+
+# Ignore data files
+stock_data.csv
