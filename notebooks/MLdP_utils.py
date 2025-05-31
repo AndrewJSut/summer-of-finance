@@ -2,7 +2,6 @@
 # Utility functions from "Machine Learning for Asset Managers"
 
 # Required Imports:
-# MLdP_utils.py
 
 # Core
 import numpy as np
@@ -12,12 +11,15 @@ import pandas as pd
 from scipy.optimize import minimize
 from scipy.linalg import block_diag
 import scipy.stats as ss
+import statsmodels.api as sm
 
 # ML tools
 from sklearn.covariance import LedoitWolf
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_samples, mutual_info_score
+from sklearn.metrics import silhouette_samples, mutual_info_score, log_loss
 from sklearn.neighbors import KernelDensity
+from sklearn.datasets import make_classification
+from sklearn.model_selection import KFold
 
 # Optional 
 from sklearn.utils import check_random_state
@@ -402,3 +404,328 @@ def randomBlockCorr(nCols, nBlocks, random_state=None, minBlockSize=1):
 #---------------------------------------------------
 
 # Chapter 5:
+
+#---------------------------------------------------
+def tValLinR(close):
+    # Compute t-value of the slope from a linear trend regression
+    x = np.ones((close.shape[0], 2))
+    x[:, 1] = np.arange(close.shape[0])
+    ols = sm.OLS(close, x).fit()
+    return ols.tvalues[1]
+
+#---------------------------------------------------
+
+def getBinsFromTrend(molecule, close, span):
+    '''
+    Derive labels from the sign of t-value of linear trend.
+    Output includes:
+    - t1: End time for the identified trend
+    - tVal: t-value associated with the estimated trend coefficient
+    - bin: Sign of the trend
+    '''
+    out = pd.DataFrame(index=molecule, columns=['t1', 'tVal', 'bin'])
+    hrzns = range(*span)
+
+    for dt0 in molecule:
+        df0 = pd.Series()
+        iloc0 = close.index.get_loc(dt0)
+        if iloc0 + max(hrzns) > close.shape[0]:
+            continue
+
+        for hrzn in hrzns:
+            dt1 = close.index[iloc0 + hrzn - 1]
+            df1 = close.loc[dt0:dt1]
+            df0.loc[dt1] = tValLinR(df1.values)
+
+        dt1 = df0.replace([np.inf, -np.inf, np.nan], 0).abs().idxmax()
+        out.loc[dt0, ['t1', 'tVal', 'bin']] = df0.index[-1], df0[dt1], np.sign(df0[dt1])
+
+    # Prevent leakage and cast types
+    out['t1'] = pd.to_datetime(out['t1'])
+    out['bin'] = pd.to_numeric(out['bin'], downcast='signed')
+    
+    return out.dropna(subset=['bin'])
+
+#---------------------------------------------------
+
+# Chapter 6:
+
+#---------------------------------------------------
+
+def getTestData(n_features=100, n_informative=25, n_redundant=25,
+                n_samples=10000, random_state=0, sigmaStd=0.0):
+    """
+    Generate a synthetic classification dataset with informative,
+    non-informative, and redundant features.
+    """
+    np.random.seed(random_state)
+
+    # Generate informative + noise (non-redundant) features
+    X, y = make_classification(
+        n_samples=n_samples,
+        n_features=n_features - n_redundant,
+        n_informative=n_informative,
+        n_redundant=0,
+        shuffle=False,
+        random_state=random_state
+    )
+
+    # Name informative and noise features
+    cols = ['I_' + str(i) for i in range(n_informative)]
+    cols += ['N_' + str(i) for i in range(n_features - n_informative - n_redundant)]
+
+    # Convert to DataFrame/Series
+    X, y = pd.DataFrame(X, columns=cols), pd.Series(y)
+
+    # Add redundant features as noisy copies of informative ones
+    selected = np.random.choice(range(n_informative), size=n_redundant)
+    for k, j in enumerate(selected):
+        X['R_' + str(k)] = X['I_' + str(j)] + np.random.normal(scale=sigmaStd, size=X.shape[0])
+
+    return X, y
+
+#---------------------------------------------------
+
+def featImpMDI(fit, featNames):
+    """
+    Compute feature importance using the Mean Decrease in Impurity (MDI) method
+    based on a Bagging ensemble of decision trees.
+
+    Parameters:
+    - fit: fitted BaggingClassifier model
+    - featNames: list of feature names
+
+    Returns:
+    - DataFrame with mean and standard error of feature importances
+    """
+    # Extract feature importances from each tree
+    df0 = {i: tree.feature_importances_ for i, tree in enumerate(fit.estimators_)}
+    df0 = pd.DataFrame.from_dict(df0, orient='index')
+    df0.columns = featNames
+
+    # Replace zeros with NaN to avoid skewing the average
+    df0 = df0.replace(0, np.nan)
+
+    # Compute mean and standard error (CLT)
+    imp = pd.concat({
+        'mean': df0.mean(),
+        'std': df0.std() * df0.shape[0]**-0.5
+    }, axis=1)
+
+    # Normalize by sum of means
+    imp /= imp['mean'].sum()
+
+    return imp
+
+#---------------------------------------------------
+
+def featImpMDA(clf, X, y, n_splits=10):
+    """
+    Feature importance based on Mean Decrease in Accuracy (MDA),
+    using out-of-sample log-loss from K-fold cross-validation.
+    
+    Parameters:
+    - clf: classifier with predict_proba method
+    - X: DataFrame of features
+    - y: Series of labels
+    - n_splits: number of cross-validation splits
+
+    Returns:
+    - DataFrame with mean and std feature importance scores
+    """
+    cvGen = KFold(n_splits=n_splits)
+    scr0 = pd.Series(dtype=float)
+    scr1 = pd.DataFrame(columns=X.columns)
+
+    for i, (train, test) in enumerate(cvGen.split(X=X)):
+        X0, y0 = X.iloc[train], y.iloc[train]
+        X1, y1 = X.iloc[test], y.iloc[test]
+
+        fit = clf.fit(X0, y0)
+        prob = fit.predict_proba(X1)
+        scr0.loc[i] = -log_loss(y1, prob, labels=clf.classes_)
+
+        for j in X.columns:
+            X1_ = X1.copy(deep=True)
+            np.random.shuffle(X1_[j].values)  # shuffle one feature
+            prob_shuffled = fit.predict_proba(X1_)
+            scr1.loc[i, j] = -log_loss(y1, prob_shuffled, labels=clf.classes_)
+
+    # Compute relative decrease in performance
+    imp = (-1 * scr1).add(scr0, axis=0)
+    imp = imp / (-1 * scr1)
+
+    # Aggregate with CLT
+    imp = pd.concat({
+        'mean': imp.mean(),
+        'std': imp.std() * imp.shape[0]**-0.5
+    }, axis=1)
+
+    return imp
+
+#---------------------------------------------------
+
+def groupMeanStd(df0, clstrs):
+    """
+    Compute mean and standard error of grouped columns in df0.
+
+    Parameters:
+    - df0: DataFrame of feature importances (rows = trees, columns = features)
+    - clstrs: Series or dict mapping group index to feature list
+
+    Returns:
+    - DataFrame with 'mean' and 'std' of group-wise importance
+    """
+    out = pd.DataFrame(columns=['mean', 'std'])
+
+    for i, j in clstrs.items():
+        df1 = df0[j].sum(axis=1)  # sum importance of features in group
+        out.loc['C_' + str(i), 'mean'] = df1.mean()
+        out.loc['C_' + str(i), 'std'] = df1.std() * df1.shape[0]**-0.5  # standard error
+
+    return out
+
+# --------------------------------------------
+def featImpMDI_Clustered(fit, featNames, clstrs):
+    """
+    Compute MDI feature importance at the cluster/group level.
+
+    Parameters:
+    - fit: Fitted BaggingClassifier or RandomForest model
+    - featNames: List of feature names
+    - clstrs: Dictionary mapping group index to list of feature names in that group
+
+    Returns:
+    - DataFrame with normalized mean and standard error of importances per cluster
+    """
+    df0 = {i: tree.feature_importances_ for i, tree in enumerate(fit.estimators_)}
+    df0 = pd.DataFrame.from_dict(df0, orient='index')
+    df0.columns = featNames
+    df0 = df0.replace(0, np.nan)  # replace zeros to avoid bias from inactive splits
+
+    imp = groupMeanStd(df0, clstrs)
+    imp /= imp['mean'].sum()  # normalize total importance to 1
+
+    return imp
+
+# --------------------------------------------
+
+def featImpMDA_Clustered(clf, X, y, clstrs, n_splits=10):
+    """
+    Compute cluster-level MDA feature importance via cross-validated log-loss.
+
+    Parameters:
+    - clf: Classifier with predict_proba method
+    - X: DataFrame of features
+    - y: Target labels
+    - clstrs: Dictionary mapping cluster names to lists of feature names
+    - n_splits: Number of K-fold splits
+
+    Returns:
+    - DataFrame of normalized mean and standard error for each cluster
+    """
+    cvGen = KFold(n_splits=n_splits)
+    scr0 = pd.Series(dtype=float)
+    scr1 = pd.DataFrame(columns=clstrs.keys())
+
+    for i, (train, test) in enumerate(cvGen.split(X=X)):
+        X0, y0 = X.iloc[train], y.iloc[train]
+        X1, y1 = X.iloc[test], y.iloc[test]
+
+        fit = clf.fit(X0, y0)
+        prob = fit.predict_proba(X1)
+        scr0.loc[i] = -log_loss(y1, prob, labels=clf.classes_)
+
+        for j in scr1.columns:  # each cluster
+            X1_ = X1.copy(deep=True)
+            for k in clstrs[j]:  # each feature in the cluster
+                np.random.shuffle(X1_[k].values)  # shuffle feature
+            prob_shuffled = fit.predict_proba(X1_)
+            scr1.loc[i, j] = -log_loss(y1, prob_shuffled, labels=clf.classes_)
+
+    # Compute relative importance and normalize
+    imp = (-1 * scr1).add(scr0, axis=0)
+    imp = imp / (-1 * scr1)
+
+    imp = pd.concat({
+        'mean': imp.mean(),
+        'std': imp.std() * imp.shape[0]**-0.5
+    }, axis=1)
+
+    # Prefix cluster names with 'C_'
+    imp.index = ['C_' + str(i) for i in imp.index]
+
+    return imp
+
+#---------------------------------------------------
+
+# Chapter 7:
+
+#---------------------------------------------------
+
+def minVarPort(cov):
+    """
+    Compute minimum variance portfolio weights.
+
+    Parameters
+    ----------
+    cov : pd.DataFrame or np.ndarray
+        Covariance matrix of asset returns.
+
+    Returns
+    -------
+    np.ndarray
+        Optimal weights that minimize portfolio variance.
+    """
+    cov = np.array(cov)
+    inv_cov = np.linalg.pinv(cov)  # Use pseudo-inverse for numerical stability
+    ones = np.ones(cov.shape[0])
+    w = inv_cov @ ones
+    w /= ones.T @ inv_cov @ ones
+    return w.reshape(-1, 1)
+
+#---------------------------------------------------
+def optPort_nco(cov, mu=None, maxNumClusters=None):
+    """
+    Computes the Nested Clustered Optimization (NCO) portfolio weights. 
+
+    Needs to be denoised first
+
+    Parameters:
+    - cov: Covariance matrix (DataFrame)
+    - mu: Expected returns (optional, as np.ndarray or pd.Series)
+    - maxNumClusters: Maximum number of clusters for k-means clustering
+
+    Returns:
+    - nco: Optimal portfolio weights (as a column vector)
+    """
+    cov = pd.DataFrame(cov)
+
+    if mu is not None:
+        mu = pd.Series(mu[:, 0])
+
+    # Step 1: Correlation clustering
+    corr1 = cov2corr(cov)
+    corr1, clstrs, _ = clusterKMeansBase(corr1, maxNumClusters=maxNumClusters, n_init=10)
+
+    # Step 2: Intra-cluster optimization
+    wIntra = pd.DataFrame(0.0, index=cov.index, columns=clstrs.keys())
+    for i in clstrs:
+        cov_ = cov.loc[clstrs[i], clstrs[i]].values
+        if mu is None:
+            mu_ = None
+        else:
+            mu_ = mu.loc[clstrs[i]].values.reshape(-1, 1)
+
+        wIntra.loc[clstrs[i], i] = optPort(cov_, mu_).flatten()
+
+    # Step 3: Inter-cluster optimization
+    cov_ = wIntra.T @ cov.values @ wIntra
+    mu_ = None if mu is None else wIntra.T @ mu.values.reshape(-1, 1)
+    wInter = pd.Series(optPort(cov_, mu_).flatten(), index=cov_.index)
+
+    # Step 4: Combine weights
+    nco = wIntra.mul(wInter, axis=1).sum(axis=1).values.reshape(-1, 1)
+    
+    return nco
+#---------------------------------------------------
