@@ -29,8 +29,28 @@ from sklearn.utils import check_random_state
 
 #--------------------------------------------------- 
 def mpPDF(var, q, pts):
-    # Marcenko-Pastur PDF
-    # q = T / N
+    """
+    Computes the Marčenko–Pastur Probability Density Function (PDF).
+
+    The Marčenko–Pastur distribution models the theoretical distribution of eigenvalues 
+    for large random covariance matrices. It is used in Random Matrix Theory to identify 
+    the spectrum of noise in empirical correlation or covariance matrices.
+
+    Parameters:
+    ----------
+    var : float
+        The variance of the distribution (typically 1 for standardized returns).
+    q : float
+        The ratio T/N, where T is the number of observations and N is the number of variables (q > 1).
+    pts : int
+        The number of points to discretize the PDF for plotting or numerical comparison.
+
+    Returns:
+    -------
+    pdf : pandas.Series
+        The Marčenko–Pastur PDF evaluated at 'pts' evenly spaced eigenvalues between the theoretical minimum and maximum.
+        The index contains the eigenvalues, and the values contain the corresponding PDF values.
+    """
     eMin = var * (1 - (1. / q) ** 0.5) ** 2
     eMax = var * (1 + (1. / q) ** 0.5) ** 2
     eVal = np.linspace(eMin, eMax, pts)
@@ -40,7 +60,25 @@ def mpPDF(var, q, pts):
 
 #---------------------------------------------------
 def getPCA(matrix):
-    # Get eVal, eVec from a Hermitian matrix
+    """
+    Performs Principal Component Analysis (PCA) on a Hermitian matrix.
+
+    This function computes the eigenvalues and eigenvectors of a symmetric (Hermitian) matrix,
+    which is typically a covariance or correlation matrix in finance and machine learning.
+    The eigenvalues are sorted in descending order, and the eigenvectors are reordered accordingly.
+
+    Parameters:
+    ----------
+    matrix : numpy.ndarray
+        A symmetric (Hermitian) matrix, such as a covariance or correlation matrix.
+
+    Returns:
+    -------
+    eVal : numpy.ndarray
+        A diagonal matrix containing the sorted eigenvalues in descending order.
+    eVec : numpy.ndarray
+        The matrix of eigenvectors corresponding to the sorted eigenvalues.
+    """
     eVal, eVec = np.linalg.eigh(matrix)
     indices = eVal.argsort()[::-1]  # arguments for sorting eVal desc
     eVal, eVec = eVal[indices], eVec[:, indices]
@@ -49,8 +87,31 @@ def getPCA(matrix):
 
 #---------------------------------------------------
 def fitKDE(obs, bWidth=.25, kernel='gaussian', x=None):
-    # Fit kernel to a series of obs, and derive the prob of obs
-    # x is the array of values on which the fit KDE will be evaluated
+    """
+    Fits a Kernel Density Estimator (KDE) to a set of observations.
+
+    This function estimates the probability density function (PDF) of a random variable 
+    using kernel density estimation. It allows evaluation of the fitted density at a 
+    specified set of points `x`.
+
+    Parameters:
+    ----------
+    obs : numpy.ndarray
+        A 1D array of observed values to which the KDE will be fitted.
+    bWidth : float, optional
+        Bandwidth (smoothing parameter) of the kernel. Default is 0.25.
+    kernel : str, optional
+        The kernel to use for the KDE. Default is 'gaussian'. Other options include 
+        'tophat', 'epanechnikov', etc., as supported by sklearn's KernelDensity.
+    x : numpy.ndarray, optional
+        Points at which to evaluate the fitted PDF. If None, uses the unique values of `obs`.
+
+    Returns:
+    -------
+    pdf : pandas.Series
+        The estimated probability density function evaluated at the values in `x`.
+        The index is the `x` values and the values are the estimated densities.
+    """
     if len(obs.shape) == 1:
         obs = obs.reshape(-1, 1)
     kde = KernelDensity(kernel=kernel, bandwidth=bWidth).fit(obs)
@@ -64,7 +125,27 @@ def fitKDE(obs, bWidth=.25, kernel='gaussian', x=None):
     pdf = pd.Series(values, index)
     return pdf
 
+#-------------------------------------------------------
+
 def getRndCov(nCols, nFacts):
+    """
+    Generates a random full-rank covariance matrix using a factor model.
+
+    The function simulates a random covariance matrix by creating a factor-loading matrix 
+    and adding a diagonal matrix of idiosyncratic noise to ensure full rank.
+
+    Parameters:
+    ----------
+    nCols : int
+        Number of variables (i.e., the dimension of the covariance matrix).
+    nFacts : int
+        Number of underlying latent factors to simulate (must be <= nCols).
+
+    Returns:
+    -------
+    cov : numpy.ndarray
+        A symmetric, positive-definite covariance matrix of shape (nCols, nCols).
+    """
     w = np.random.normal(size=(nCols, nFacts))
     cov = np.dot(w, w.T)  # random cov matrix, however not full rank
     cov += np.diag(np.random.uniform(size=nCols))  # full rank
@@ -72,6 +153,10 @@ def getRndCov(nCols, nFacts):
 
 #---------------------------------------------------
 def cov2corr(cov):
+    """
+    Convert a covariance matrix to a correlation matrix.
+    """
+    
     # Derive the correlation matrix from a covariance matrix
     std = np.sqrt(np.diag(cov))
     corr = cov / np.outer(std, std)
@@ -80,7 +165,31 @@ def cov2corr(cov):
 
 #---------------------------------------------------
 def errPDFs(var, eVal, q, bWidth, pts=1000):
-    # Fit error
+    """
+    Computes the sum of squared errors (SSE) between the theoretical Marčenko–Pastur PDF 
+    and the empirical PDF estimated via Kernel Density Estimation (KDE).
+
+    This function is useful for assessing how well a set of eigenvalues fits the 
+    theoretical distribution expected under Random Matrix Theory.
+
+    Parameters:
+    ----------
+    var : float
+        Variance of the underlying distribution (e.g., asset returns).
+    eVal : numpy.ndarray
+        Array of empirical eigenvalues from a covariance/correlation matrix.
+    q : float
+        The ratio T/N, where T is the number of observations and N is the number of variables (q > 1).
+    bWidth : float
+        Bandwidth for the KDE used to estimate the empirical PDF.
+    pts : int, optional
+        Number of evaluation points for the theoretical Marčenko–Pastur PDF (default is 1000).
+
+    Returns:
+    -------
+    sse : float
+        The sum of squared errors between the theoretical and empirical PDFs.
+    """
     pdf0 = mpPDF(var, q, pts)  # theoretical pdf
     pdf1 = fitKDE(eVal, bWidth, x=pdf0.index.values)  # empirical pdf
     sse = np.sum((pdf1 - pdf0) ** 2)
@@ -88,6 +197,31 @@ def errPDFs(var, eVal, q, bWidth, pts=1000):
 
 #---------------------------------------------------
 def findMaxEval(eVal, q, bWidth):
+    """
+    Estimates the maximum theoretical eigenvalue (eMax) using Marčenko–Pastur theory 
+    by minimizing the error between the empirical and theoretical PDFs.
+
+    This function finds the variance parameter that minimizes the sum of squared errors 
+    between the KDE-fitted empirical eigenvalue distribution and the Marčenko–Pastur distribution.
+    It then computes the theoretical maximum eigenvalue based on that optimal variance.
+
+    Parameters:
+    ----------
+    eVal : numpy.ndarray
+        Array of empirical eigenvalues from a covariance/correlation matrix.
+    q : float
+        The ratio T/N, where T is the number of observations and N is the number of variables (q > 1).
+    bWidth : float
+        Bandwidth used for Kernel Density Estimation of the empirical PDF.
+
+    Returns:
+    -------
+    eMax : float
+        The estimated maximum eigenvalue according to the Marčenko–Pastur distribution.
+    var : float
+        The variance that minimizes the error between the theoretical and empirical PDFs.
+    """
+
     # Use a lambda that extracts the float from the array
     out = minimize(lambda var: errPDFs(var[0], eVal, q, bWidth),
                    x0=[0.5], bounds=[(1E-5, 1 - 1E-5)])
@@ -100,6 +234,31 @@ def findMaxEval(eVal, q, bWidth):
 #---------------------------------------------------
 
 def denoisedCorr(eVal, eVec, nFacts):
+    """
+    Constructs a denoised correlation matrix using eigenvalue clipping.
+
+    This method retains the top `nFacts` principal components (interpreted as signal) 
+    and replaces the remaining (noise) eigenvalues with their average. The matrix is then 
+    reconstructed and rescaled to a proper correlation matrix.
+
+    This requires you first find as follows:
+        eMax0, var0 = findMaxEval(np.diag(eVal0), q, bWidth=0.01)
+        nFacts0 = eVal0.shape[0] - np.diag(eVal0)[::-1].searchsorted(eMax0)
+
+    Parameters:
+    ----------
+    eVal : numpy.ndarray
+        A diagonal matrix (2D array) of eigenvalues from PCA on a correlation matrix.
+    eVec : numpy.ndarray
+        A matrix of eigenvectors corresponding to `eVal`.
+    nFacts : int
+        The number of dominant factors (signal) to retain. Remaining components are treated as noise.
+
+    Returns:
+    -------
+    corr1 : numpy.ndarray
+        The denoised correlation matrix, rescaled to have ones on the diagonal.
+    """
     # Step 1: Copy eigenvalues
     eVal_ = np.diag(eVal).copy()
 
@@ -116,7 +275,32 @@ def denoisedCorr(eVal, eVec, nFacts):
 #---------------------------------------------------
 
 def denoisedCorr2(eVal, eVec, nFacts, alpha=0):
-    # Remove noise from corr through targeted shrinkage
+    """
+    Constructs a denoised correlation matrix using targeted shrinkage on noise components.
+
+    This method separates the signal and noise components of a correlation matrix using PCA. 
+    The signal is reconstructed from the top `nFacts` eigenvalues, while the noise is reconstructed 
+    from the remaining components. A shrinkage parameter `alpha` controls how much of the noise 
+    structure is retained versus replaced by its diagonal (idiosyncratic risk).
+
+    Parameters:
+    ----------
+    eVal : numpy.ndarray
+        A diagonal matrix (2D array) of eigenvalues from PCA on a correlation matrix.
+    eVec : numpy.ndarray
+        A matrix of eigenvectors corresponding to `eVal`.
+    nFacts : int
+        Number of principal components (signal factors) to retain.
+    alpha : float, optional (default=0)
+        Shrinkage parameter in [0, 1] applied to the noise:
+        - 0: keep only the diagonal of the noise (pure idiosyncratic risk),
+        - 1: fully reconstruct the noise matrix structure.
+
+    Returns:
+    -------
+    corr2 : numpy.ndarray
+        The denoised correlation matrix combining the signal and shrunken noise components.
+    """
 
     # Signal eigenvalues and eigenvectors
     eValL, eVecL = eVal[:nFacts, :nFacts], eVec[:, :nFacts]
@@ -132,13 +316,37 @@ def denoisedCorr2(eVal, eVec, nFacts, alpha=0):
     corr2 = corr0 + alpha * corr1 + (1 - alpha) * np.diag(np.diag(corr1))
     
     return corr2
+#---------------------------------------------------
 
 # Convert correlation matrix to covariance matrix
 def corr2cov(corr, std):
     return np.outer(std, std) * corr
 
+#---------------------------------------------------
 # Create a block-diagonal correlation matrix
 def formBlockMatrix(nBlocks, bSize, bCorr):
+    """
+    Creates a block-diagonal correlation matrix with uniform intra-block correlation.
+
+    Each block represents a cluster of variables (e.g., assets) that are 
+    equally correlated with one another. Blocks are uncorrelated with each other.
+
+    Parameters:
+    ----------
+    nBlocks : int
+        Number of blocks (clusters) in the matrix.
+    bSize : int
+        Size of each block (number of variables per cluster).
+    bCorr : float
+        Intra-block correlation value (must be in [0, 1)).
+
+    Returns:
+    -------
+    corr : numpy.ndarray
+        A block-diagonal correlation matrix of shape (nBlocks * bSize, nBlocks * bSize),
+        with 1s on the diagonal and `bCorr` off-diagonal within each block.
+    """
+    
     block = np.ones((bSize, bSize)) * bCorr
     np.fill_diagonal(block, 1)  # set diagonal to 1
     corr = block_diag(*([block] * nBlocks))
@@ -147,6 +355,30 @@ def formBlockMatrix(nBlocks, bSize, bCorr):
 #---------------------------------------------------
 # Create the true covariance matrix and mean vector
 def formTrueMatrix(nBlocks, bSize, bCorr):
+    """
+    Constructs a realistic synthetic covariance matrix and mean vector from a block-diagonal correlation structure.
+
+    This function generates a block-structured correlation matrix with random permutations, 
+    random volatilities, and a random mean vector—useful for simulating asset returns in 
+    portfolio optimization or clustering experiments.
+
+    Parameters:
+    ----------
+    nBlocks : int
+        Number of blocks (clusters) in the correlation matrix.
+    bSize : int
+        Number of variables (e.g., assets) per block.
+    bCorr : float
+        Intra-block correlation value (between 0 and 1).
+
+    Returns:
+    -------
+    mu0 : numpy.ndarray
+        A column vector of simulated expected returns (shape: [nAssets, 1]).
+    cov0 : numpy.ndarray
+        A full-rank covariance matrix (shape: [nAssets, nAssets]) derived from the 
+        block-structured correlation matrix and random volatilities.
+    """
     corr0 = formBlockMatrix(nBlocks, bSize, bCorr)
     corr0 = pd.DataFrame(corr0)
 
@@ -166,8 +398,36 @@ def formTrueMatrix(nBlocks, bSize, bCorr):
 
     return mu0, cov0
 
+# -----------------------------------------------------
 def simCovMu(mu0, cov0, nObs, shrink=False):
-    # Simulate multivariate returns and estimate mean/covariance
+    """
+    Simulates multivariate returns and estimates their sample mean and covariance.
+
+    This function generates synthetic data from a multivariate normal distribution 
+    using a true mean vector and covariance matrix. It then computes the sample 
+    estimates of the mean and covariance, optionally applying Ledoit-Wolf shrinkage.
+
+    Used in pair with 'formTrueMatrix' to create a realistic dataset for testing.
+
+    Parameters:
+    ----------
+    mu0 : numpy.ndarray
+        True mean vector of shape [nAssets, 1].
+    cov0 : numpy.ndarray
+        True covariance matrix of shape [nAssets, nAssets].
+    nObs : int
+        Number of simulated observations (e.g., days of returns).
+    shrink : bool, optional
+        Whether to apply Ledoit-Wolf shrinkage to the sample covariance matrix (default is False).
+
+    Returns:
+    -------
+    mu1 : numpy.ndarray
+        Estimated sample mean vector (shape: [nAssets, 1]).
+    cov1 : numpy.ndarray
+        Estimated sample covariance matrix (either empirical or shrinkage-adjusted).
+    """
+    
     x = np.random.multivariate_normal(mu0.flatten(), cov0, size=nObs)
     
     # Sample mean vector
@@ -181,7 +441,30 @@ def simCovMu(mu0, cov0, nObs, shrink=False):
     
     return mu1, cov1
 
+#---------------------------------------------------
 def deNoiseCov(cov0, q, bWidth):
+    """
+    Applies Random Matrix Theory (RMT) to denoise a covariance matrix via 
+    Marčenko–Pastur eigenvalue filtering and PCA-based reconstruction.
+
+    This process improves the stability and estimation accuracy of the covariance 
+    matrix by removing noisy components and retaining only significant eigenmodes.
+
+    Parameters:
+    ----------
+    cov0 : numpy.ndarray
+        Empirical covariance matrix (shape: [nAssets, nAssets]).
+    q : float
+        The ratio T/N, where T is the number of observations and N is the number of variables (q > 1).
+    bWidth : float
+        Bandwidth parameter for kernel density estimation used in Marčenko–Pastur fitting.
+
+    Returns:
+    -------
+    cov1 : numpy.ndarray
+        Denoised covariance matrix reconstructed from the filtered correlation matrix 
+        and the original standard deviations.
+    """
     # Step 1: Convert covariance matrix to correlation matrix
     corr0 = cov2corr(cov0)
 
@@ -202,6 +485,26 @@ def deNoiseCov(cov0, q, bWidth):
 
 #---------------------------------------------------
 def optPort(cov, mu=None):
+    """
+    Computes the minimum variance portfolio weights, optionally with a return target.
+
+    If `mu` is provided, the function computes the mean-variance optimal (Markowitz) 
+    portfolio that maximizes the Sharpe ratio (with unit sum constraint). If `mu` is 
+    not provided, it defaults to the global minimum variance (GMV) portfolio.
+
+    Parameters:
+    ----------
+    cov : numpy.ndarray
+        Covariance matrix of asset returns (shape: [nAssets, nAssets]).
+    mu : numpy.ndarray, optional
+        Expected return vector (shape: [nAssets, 1]). If None, assumes all assets 
+        have equal expected return (i.e., computes the GMV portfolio).
+
+    Returns:
+    -------
+    w : numpy.ndarray
+        Optimal portfolio weights (shape: [nAssets, 1]) that sum to 1.
+    """
     inv = np.linalg.inv(cov)
     ones = np.ones(shape=(inv.shape[0], 1))
     if mu is None:
@@ -251,6 +554,32 @@ def varInfo(x, y, bins, norm=False):
 # Chapter 4:
 
 def clusterKMeansBase(corr0, maxNumClusters=10, n_init=10):
+    """
+    Applies K-Means clustering to a correlation matrix to identify clusters of similar assets.
+
+    The correlation matrix is transformed into a distance matrix using the angular distance formula,
+    and K-Means clustering is applied multiple times to find the most stable and well-separated clusters
+    using the silhouette score as a criterion.
+
+    Parameters:
+    ----------
+    corr0 : pandas.DataFrame
+        The input correlation matrix (symmetric, with values in [-1, 1]).
+    maxNumClusters : int, optional
+        The maximum number of clusters to test (default is 10).
+    n_init : int, optional
+        Number of random initializations to run the clustering process for robustness (default is 10).
+
+    Returns:
+    -------
+    corr1 : pandas.DataFrame
+        The reordered correlation matrix according to the best clustering assignment.
+    clstrs : dict
+        A dictionary mapping each cluster label to a list of asset names (column labels in `corr0`).
+    silh_series : pandas.Series
+        A series of silhouette scores for each observation, indicating cluster assignment quality.
+    """
+
     x = ((1 - corr0.fillna(0)) / 2.)**.5
     silh_best, kmeans_best = pd.Series(), None
     for _ in range(n_init):
@@ -271,6 +600,31 @@ def clusterKMeansBase(corr0, maxNumClusters=10, n_init=10):
 #---------------------------------------------------
 
 def makeNewOutputs(corr0, clstrs, clstrs2):
+    """
+    Merges two cluster dictionaries and reorders a correlation matrix accordingly, 
+    computing the updated silhouette scores for the new clustering structure.
+
+    This is useful when combining clustering results from two different runs 
+    (e.g., different parameter sets) and evaluating the quality of the merged clustering.
+
+    Parameters:
+    ----------
+    corr0 : pandas.DataFrame
+        Original correlation matrix with asset labels as both index and columns.
+    clstrs : dict
+        First dictionary of clusters; keys are cluster IDs, values are lists of asset names.
+    clstrs2 : dict
+        Second dictionary of clusters to merge with `clstrs`.
+
+    Returns:
+    -------
+    corrNew : pandas.DataFrame
+        Correlation matrix reordered based on the merged cluster assignments.
+    clstrsNew : dict
+        Combined dictionary of clusters, with reindexed cluster labels.
+    silhNew : pandas.Series
+        Silhouette scores for each asset in the new clustering structure.
+    """
     clstrsNew = {}
     for i in clstrs.keys():
         clstrsNew[len(clstrsNew.keys())] = list(clstrs[i])
@@ -291,6 +645,32 @@ def makeNewOutputs(corr0, clstrs, clstrs2):
 
 #---------------------------------------------------
 def clusterKMeansTop(corr0, maxNumClusters=None, n_init=10):
+    """
+    Recursively applies and refines K-Means clustering on a correlation matrix to improve cluster quality.
+
+    This function starts with a base K-Means clustering and evaluates the clustering quality 
+    using a t-statistic (mean / std of silhouette scores) for each cluster. Clusters with below-average 
+    t-statistics are recursively reclustered, and the process continues until no significant improvement 
+    is found.
+
+    Parameters:
+    ----------
+    corr0 : pandas.DataFrame
+        Input correlation matrix with asset labels as both index and columns.
+    maxNumClusters : int, optional
+        Maximum number of clusters to try. If None, defaults to the number of assets minus one.
+    n_init : int, optional
+        Number of random initializations for K-Means to improve robustness. Default is 10.
+
+    Returns:
+    -------
+    corrFinal : pandas.DataFrame
+        Final reordered correlation matrix based on refined clustering.
+    clstrsFinal : dict
+        Final dictionary of clusters after recursive improvement.
+    silhFinal : pandas.Series
+        Final silhouette scores for all assets under the refined clustering.
+    """
     if maxNumClusters is None:
         maxNumClusters = corr0.shape[1] - 1
 
@@ -341,6 +721,30 @@ def clusterKMeansTop(corr0, maxNumClusters=None, n_init=10):
 
 #---------------------------------------------------
 def getCovSub(nObs, nCols, sigma, random_state=None):
+    """
+    Generates a synthetic covariance matrix with a shared underlying signal and controlled noise.
+
+    This function simulates `nCols` time series that share a common latent factor 
+    (perfectly correlated signal), plus additive Gaussian noise with standard deviation `sigma`.
+    It is useful for testing denoising or clustering techniques.
+
+    Parameters:
+    ----------
+    nObs : int
+        Number of observations (e.g., time points).
+    nCols : int
+        Number of variables (e.g., assets or features).
+    sigma : float
+        Standard deviation of the added noise (controls correlation strength).
+    random_state : int or np.random.RandomState, optional
+        Seed or random number generator for reproducibility.
+
+    Returns:
+    -------
+    ar0 : numpy.ndarray
+        A covariance matrix of shape (nCols, nCols) derived from the noisy, shared-signal time series.
+    """
+    
     # Sub correlation matrix
     rng = check_random_state(random_state)
     if nCols == 1:
@@ -353,6 +757,32 @@ def getCovSub(nObs, nCols, sigma, random_state=None):
 
 #---------------------------------------------------
 def getRndBlockCov(nCols, nBlocks, minBlockSize=1, sigma=1., random_state=None):
+    """
+    Generates a block-structured random covariance matrix with noisy sub-blocks.
+
+    Each block simulates a group of correlated variables (e.g., assets) sharing an underlying 
+    signal with added Gaussian noise. Block sizes are randomly determined but constrained to 
+    be at least `minBlockSize`.
+
+    Parameters:
+    ----------
+    nCols : int
+        Total number of variables (e.g., assets).
+    nBlocks : int
+        Number of correlation blocks to generate.
+    minBlockSize : int, optional
+        Minimum number of variables per block (default is 1).
+    sigma : float, optional
+        Standard deviation of noise in each sub-block (higher = lower intra-block correlation).
+    random_state : int or np.random.RandomState, optional
+        Seed or generator for reproducibility.
+
+    Returns:
+    -------
+    cov : numpy.ndarray
+        A block-diagonal covariance matrix of shape (nCols, nCols), composed of randomly 
+        sized sub-blocks with correlated noise structures.
+    """
     # Generate a block random correlation matrix
     rng = check_random_state(random_state)
     parts = rng.choice(
@@ -380,7 +810,30 @@ def getRndBlockCov(nCols, nBlocks, minBlockSize=1, sigma=1., random_state=None):
 
 #---------------------------------------------------
 def randomBlockCorr(nCols, nBlocks, random_state=None, minBlockSize=1):
-    # Form block corr
+    """
+    Generates a randomized block-structured correlation matrix with added noise.
+
+    This function creates a synthetic correlation matrix composed of correlated blocks (clusters)
+    using `getRndBlockCov`, and then injects additional random noise to make the structure more realistic.
+    The resulting matrix is normalized into a proper correlation matrix.
+
+    Parameters:
+    ----------
+    nCols : int
+        Total number of variables (e.g., assets or features).
+    nBlocks : int
+        Number of underlying correlation blocks to generate.
+    random_state : int or np.random.RandomState, optional
+        Seed or random number generator for reproducibility.
+    minBlockSize : int, optional
+        Minimum number of variables per block (default is 1).
+
+    Returns:
+    -------
+    corr0 : pandas.DataFrame
+        A symmetric, positive semi-definite correlation matrix with block structure and noise,
+        formatted as a pandas DataFrame.
+    """
     rng = check_random_state(random_state)
     cov0 = getRndBlockCov(
         nCols,
@@ -407,7 +860,23 @@ def randomBlockCorr(nCols, nBlocks, random_state=None, minBlockSize=1):
 
 #---------------------------------------------------
 def tValLinR(close):
-    # Compute t-value of the slope from a linear trend regression
+    """
+    Computes the t-value of the slope coefficient from a linear regression on a time series.
+
+    This function fits an Ordinary Least Squares (OLS) regression of the input `close` values 
+    against time (trend) and returns the t-statistic of the slope. A high absolute t-value 
+    indicates a statistically significant trend.
+
+    Parameters:
+    ----------
+    close : array-like or pandas.Series
+        Time series of values (e.g., asset closing prices).
+
+    Returns:
+    -------
+    t_val : float
+        The t-statistic for the slope coefficient of the linear regression.
+    """
     x = np.ones((close.shape[0], 2))
     x[:, 1] = np.arange(close.shape[0])
     ols = sm.OLS(close, x).fit()
